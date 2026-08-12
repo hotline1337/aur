@@ -56,17 +56,18 @@ jobs:
             sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" "$dir/PKGBUILD"
           done
 
-      - name: Przelicz sumy b2 i wygeneruj .SRCINFO (Arch Container)
+      - name: Przelicz sumy b2 i wygeneruj .SRCINFO
         if: steps.compare.outputs.changed == 'true'
         run: |
           docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel bash -c "
             pacman -Sy --noconfirm pacman-contrib &&
-            useradd -m builder && chown -R builder -R /pkg &&
+            useradd -m builder && chown -R builder /pkg &&
             for dir in nym-vpn-app-nightly-bin nym-vpnd-nightly-bin; do
               cd /pkg/\$dir
               su builder -c 'updpkgsums && makepkg --printsrcinfo > .SRCINFO'
             done
           "
+          sudo chown -R $USER:$USER .
 
       - name: Commit i push do repo GitHub
         if: steps.compare.outputs.changed == 'true'
