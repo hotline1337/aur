@@ -2,18 +2,15 @@ name: Sync NymVPN nightly to AUR
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # Raz na 24h (codziennie o 00:00 UTC)
+    - cron: '0 0 * * *'   # Raz na 24h
   workflow_dispatch:       # Ręczne uruchomienie
 
 permissions:
   contents: write
 
 jobs:
-  update:
+  sync:
     runs-on: ubuntu-latest
-    outputs:
-      changed: ${{ steps.compare.outputs.changed }}
-      tag: ${{ steps.latest.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +58,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel bash -c "
             pacman -Sy --noconfirm pacman-contrib &&
-            useradd -m builder && chown -R builder /pkg &&
+            useradd -m builder && chown -R builder -R /pkg &&
             for dir in nym-vpn-app-nightly-bin nym-vpnd-nightly-bin; do
               cd /pkg/\$dir
               su builder -c 'updpkgsums && makepkg --printsrcinfo > .SRCINFO'
@@ -74,26 +71,32 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nym-vpn-app-nightly-bin/PKGBUILD nym-vpn-app-nightly-bin/.SRCINFO nym-vpnd-nightly-bin/PKGBUILD nym-vpnd-nightly-bin/.SRCINFO
+          git add nym-vpn-app-nightly-bin/ nym-vpnd-nightly-bin/
           git commit -m "Update to ${{ steps.latest.outputs.tag }}"
           git push
 
-  publish-aur:
-    needs: update
-    if: needs.update.outputs.changed == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        package: [nym-vpn-app-nightly-bin, nym-vpnd-nightly-bin]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Publikuj ${{ matrix.package }} w AUR
+      - name: Publikuj nym-vpnd-nightly-bin w AUR
+        if: steps.compare.outputs.changed == 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
-          pkgname: ${{ matrix.package }}
-          pkgbuild: ./${{ matrix.package }}/PKGBUILD
+          pkgname: nym-vpnd-nightly-bin
+          pkgbuild: ./nym-vpnd-nightly-bin/PKGBUILD
+          assets: nym-vpnd-nightly-bin/nym-vpnd.service
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to ${{ needs.update.outputs.tag }} (auto)"
+          commit_message: "Update to ${{ steps.latest.outputs.tag }} (auto)"
+
+      - name: Publikuj nym-vpn-app-nightly-bin w AUR
+        if: steps.compare.outputs.changed == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: nym-vpn-app-nightly-bin
+          pkgbuild: ./nym-vpn-app-nightly-bin/PKGBUILD
+          assets: |
+            nym-vpn-app-nightly-bin/nym-vpn.desktop
+            nym-vpn-app-nightly-bin/nym-vpn.svg
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ steps.latest.outputs.tag }} (auto)"
