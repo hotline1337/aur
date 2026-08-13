@@ -61,7 +61,7 @@ jobs:
             useradd -m builder && chown -R builder -R /pkg &&
             for dir in nym-vpn-app-nightly-bin nym-vpnd-nightly-bin; do
               cd /pkg/\$dir
-              su builder -c 'updpkgsums && makepkg --printsrcinfo > .SRCINFO'
+              su builder -c 'SRCDEST=/tmp updpkgsums && makepkg --printsrcinfo > .SRCINFO'
             done
           "
           sudo chown -R $USER:$USER .
@@ -71,7 +71,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nym-vpn-app-nightly-bin/ nym-vpnd-nightly-bin/
+          git add nym-vpn-app-nightly-bin/PKGBUILD nym-vpn-app-nightly-bin/.SRCINFO \
+                  nym-vpnd-nightly-bin/PKGBUILD nym-vpnd-nightly-bin/.SRCINFO
           git commit -m "Update to ${{ steps.latest.outputs.tag }}"
           git push
 
