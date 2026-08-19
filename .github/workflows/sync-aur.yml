@@ -14,37 +14,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Znajdź najnowszy tag beta
+      - name: Znajdź najnowszy release pre-release
         id: latest
         run: |
-          TAG=$(curl -s "https://api.github.com/repos/nymtech/nym-vpn-client/tags?per_page=30" \
-            | jq -r '[.[] | select(.name | test("^nym-vpn-v[0-9.]+-beta\\.[0-9]+$"))][0].name')
+          # Pobieramy najnowszy pre-release z API wydań
+          TAG=$(curl -s "https://api.github.com/repos/nymtech/nym-vpn-client/releases" \
+            | jq -r '[.[] | select(.prerelease == true and .draft == false)][0].tag_name')
+
           if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "Nie znaleziono taga beta" >&2
+            echo "Nie znaleziono wydania pre-release" >&2
             exit 1
           fi
+
+          # Wyciągamy pkgver (np. 2026.12.3) i pkgrel (np. 1 z beta.1)
+          PKGVER=$(echo "$TAG" | sed -E 's/^nym-vpn-v([0-9.]+)-beta\.([0-9]+)$/\1/')
+          PKGREL=$(echo "$TAG" | sed -E 's/^nym-vpn-v([0-9.]+)-beta\.([0-9]+)$/\2/')
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "pkgver=$PKGVER" >> "$GITHUB_OUTPUT"
+          echo "pkgrel=$PKGREL" >> "$GITHUB_OUTPUT"
 
       - name: Porównaj z aktualnym PKGBUILD
         id: compare
         run: |
-          TAG="${{ steps.latest.outputs.tag }}"
-          CUR_VER=$(grep '^pkgver=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2)
-          CUR_REL=$(grep '^pkgrel=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2)
-          CUR_TAG="nym-vpn-v${CUR_VER}-beta.${CUR_REL}"
+          NEW_VER="${{ steps.latest.outputs.pkgver }}"
+          NEW_REL="${{ steps.latest.outputs.pkgrel }}"
 
-          if [ "$CUR_TAG" = "$TAG" ]; then
+          CUR_VER=$(grep '^pkgver=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2 | tr -d "'\" ")
+          CUR_REL=$(grep '^pkgrel=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2 | tr -d "'\" ")
+
+          if [ "$CUR_VER" = "$NEW_VER" ] && [ "$CUR_REL" = "$NEW_REL" ]; then
+            echo "Wersja w PKGBUILD ($CUR_VER-$CUR_REL) jest aktualna."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
+            echo "Wykryto nową wersję: $NEW_VER-$NEW_REL (obecna: $CUR_VER-$CUR_REL)"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Zaktualizuj PKGBUILDy
         if: steps.compare.outputs.changed == 'true'
         run: |
-          TAG="${{ steps.latest.outputs.tag }}"
-          PKGVER=$(echo "$TAG" | sed -E 's/^nym-vpn-v([0-9.]+)-beta\.([0-9]+)$/\1/')
-          PKGREL=$(echo "$TAG" | sed -E 's/^nym-vpn-v([0-9.]+)-beta\.([0-9]+)$/\2/')
+          PKGVER="${{ steps.latest.outputs.pkgver }}"
+          PKGREL="${{ steps.latest.outputs.pkgrel }}"
 
           DIRS=("nym-vpn-app-beta-bin" "nym-vpnd-beta-bin")
 
