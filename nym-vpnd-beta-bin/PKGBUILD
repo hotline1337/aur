@@ -1,0 +1,47 @@
+# Maintainer: hotline1337 <denuvo at tuta dot io>
+
+pkgname=nym-vpnd-beta-bin
+pkgver=2026.12.1
+pkgrel=1
+_release_tag="nym-vpn-v${pkgver}-beta.${pkgrel}"
+pkgdesc="NymVPN daemon (Beta)"
+arch=("x86_64" "aarch64")
+url="https://github.com/nymtech/nym-vpn-client"
+license=("GPL-3.0-only")
+depends=(
+  "dbus"
+  "gcc-libs"
+  "glibc"
+  "libmnl"
+  "libnftnl"
+  "polkit"
+)
+provides=("nym-vpnd" "nym-exclude" "nym-socks5-proxy")
+conflicts=("nym-vpnd")
+options=("!debug")
+source_x86_64=(
+  "${url}/releases/download/${_release_tag}/nym-vpn-core-v${pkgver}-beta.${pkgrel}_linux_x86_64.tar.gz"
+  "nym-vpnd.service"
+)
+source_aarch64=(
+  "${url}/releases/download/${_release_tag}/nym-vpn-core-v${pkgver}-beta.${pkgrel}_linux_aarch64.tar.gz"
+  "nym-vpnd.service"
+)
+b2sums_x86_64=(
+  "SKIP"
+  "SKIP"
+)
+b2sums_aarch64=(
+  "SKIP"
+  "SKIP"
+)
+
+package() {
+  local _srcdir="nym-vpn-core-v${pkgver}-nightly.${pkgrel}_linux_${CARCH}"
+
+  install -Dm755 "${_srcdir}/nym-vpnd" "${pkgdir}/usr/bin/nym-vpnd"
+  install -Dm4755 "${_srcdir}/nym-exclude" "${pkgdir}/usr/bin/nym-exclude"
+  install -Dm755 "${_srcdir}/nym-socks5-proxy" "${pkgdir}/usr/bin/nym-socks5-proxy"
+
+  install -Dm644 nym-vpnd.service "${pkgdir}/usr/lib/systemd/system/nym-vpnd.service"
+}
