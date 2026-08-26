@@ -1,9 +1,10 @@
 # Maintainer: hotline1337 <denuvo at tuta dot io>
 
 pkgname=nym-vpn-app-beta-bin
-pkgver=2026.11.1
+_dlver=2026.12.2
+pkgver=2026.12.2
 pkgrel=1
-_release_tag="nym-vpn-v${pkgver}-beta.${pkgrel}"
+_release_tag="nym-vpn-v${_dlver}"
 pkgdesc="NymVPN desktop client (Beta)"
 arch=("x86_64" "aarch64")
 url="https://github.com/nymtech/nym-vpn-client"
@@ -24,12 +25,12 @@ provides=("nym-vpn-app")
 conflicts=("nym-vpn-app")
 options=("!debug")
 source_x86_64=(
-  "nym-vpn-app-bin-x86_64::${url}/releases/download/${_release_tag}/nym-vpn_${pkgver}-beta.${pkgrel}_linux_x64"
+  "nym-vpn-app-bin-x86_64::${url}/releases/download/${_release_tag}/nym-vpn_${_dlver}_linux_x64"
   "nym-vpn.desktop"
   "nym-vpn.svg"
 )
 source_aarch64=(
-  "nym-vpn-app-bin-aarch64::${url}/releases/download/${_release_tag}/nym-vpn_${pkgver}-beta.${pkgrel}_linux_arm64"
+  "nym-vpn-app-bin-aarch64::${url}/releases/download/${_release_tag}/nym-vpn_${_dlver}_linux_arm64"
   "nym-vpn.desktop"
   "nym-vpn.svg"
 )
