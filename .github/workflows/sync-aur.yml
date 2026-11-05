@@ -117,7 +117,9 @@ jobs:
         with:
           pkgname: nym-vpnd-beta-bin
           pkgbuild: ./nym-vpnd-beta-bin/PKGBUILD
-          assets: nym-vpnd-beta-bin/nym-vpnd.service
+          assets: |
+            nym-vpnd-beta-bin/nym-vpnd.service
+            nym-vpnd-beta-bin/nym-vpn.conf
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
