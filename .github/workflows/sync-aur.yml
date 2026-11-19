@@ -1,4 +1,4 @@
-name: Sync NymVPN beta to AUR
+name: Sync packages
 
 on:
   schedule:
@@ -14,12 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Znajdź najnowszą pasującą wersję
-        id: latest
+      # --- NymVPN Beta ---
+      - name: Znajdź najnowszą pasującą wersję NymVPN
+        id: latest_nym
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
 
           TAGS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -56,29 +57,33 @@ jobs:
           echo "pkgrel=$BEST_PKGREL" >> "$GITHUB_OUTPUT"
           echo "dlver=$BEST_DLVER" >> "$GITHUB_OUTPUT"
 
-      - name: Porównaj z aktualnym PKGBUILD
-        id: compare
+      - name: Porównaj NymVPN z aktualnym PKGBUILD
+        id: compare_nym
         run: |
-          NEW_VER="${{ steps.latest.outputs.pkgver }}"
-          NEW_REL="${{ steps.latest.outputs.pkgrel }}"
+          set -Eeuo pipefail
+
+          NEW_VER="${{ steps.latest_nym.outputs.pkgver }}"
+          NEW_REL="${{ steps.latest_nym.outputs.pkgrel }}"
 
           CUR_VER=$(grep '^pkgver=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2 | tr -d "'\" ")
           CUR_REL=$(grep '^pkgrel=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2 | tr -d "'\" ")
 
           if [ "$CUR_VER" = "$NEW_VER" ] && [ "$CUR_REL" = "$NEW_REL" ]; then
-            echo "Wersja w PKGBUILD ($CUR_VER-$CUR_REL) jest aktualna."
+            echo "Wersja NymVPN w PKGBUILD ($CUR_VER-$CUR_REL) jest aktualna."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Wykryto nową wersję: $NEW_VER-$NEW_REL (obecna: $CUR_VER-$CUR_REL)"
+            echo "Wykryto nową wersję NymVPN: $NEW_VER-$NEW_REL (obecna: $CUR_VER-$CUR_REL)"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Zaktualizuj PKGBUILDy
-        if: steps.compare.outputs.changed == 'true'
+      - name: Zaktualizuj PKGBUILDy NymVPN
+        if: steps.compare_nym.outputs.changed == 'true'
         run: |
-          PKGVER="${{ steps.latest.outputs.pkgver }}"
-          PKGREL="${{ steps.latest.outputs.pkgrel }}"
-          DLVER="${{ steps.latest.outputs.dlver }}"
+          set -Eeuo pipefail
+
+          PKGVER="${{ steps.latest_nym.outputs.pkgver }}"
+          PKGREL="${{ steps.latest_nym.outputs.pkgrel }}"
+          DLVER="${{ steps.latest_nym.outputs.dlver }}"
 
           DIRS=("nym-vpn-app-beta-bin" "nym-vpnd-beta-bin")
 
@@ -88,31 +93,96 @@ jobs:
             sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" "$dir/PKGBUILD"
           done
 
-      - name: Przelicz sumy b2 i wygeneruj .SRCINFO
-        if: steps.compare.outputs.changed == 'true'
+      # --- ntsync-iocp-dkms-git ---
+      - name: Sprawdź commity salkim-kernel-modules (ntsync-iocp)
+        id: check_ntsync
         run: |
-          docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel bash -c "
-            pacman -Sy --noconfirm pacman-contrib &&
-            useradd -m builder && chown -R builder -R /pkg &&
-            for dir in nym-vpn-app-beta-bin nym-vpnd-beta-bin; do
-              cd /pkg/\$dir
-              su builder -c 'SRCDEST=/tmp updpkgsums && makepkg --printsrcinfo > .SRCINFO'
-            done
-          "
-          sudo chown -R $USER:$USER .
+          set -Eeuo pipefail
 
-      - name: Commit i push do repo GitHub
-        if: steps.compare.outputs.changed == 'true'
+          REMOTE_REPO="https://github.com/nanomatters/salkim-kernel-modules.git"
+          PKG_DIR="ntsync-iocp-dkms-git"
+
+          REMOTE_COMMIT=$(git ls-remote "$REMOTE_REPO" HEAD | cut -f1)
+          if [ -z "$REMOTE_COMMIT" ]; then
+            echo "Nie udało się pobrać commita HEAD z $REMOTE_REPO" >&2
+            exit 1
+          fi
+
+          CUR_PKGVER=$(grep '^pkgver=' "$PKG_DIR/PKGBUILD" | cut -d= -f2 | tr -d "'\" ")
+          CUR_HASH="${CUR_PKGVER##*.g}"
+
+          if [ -n "$CUR_HASH" ] && [[ "$REMOTE_COMMIT" == "${CUR_HASH}"* ]]; then
+            echo "ntsync-iocp jest aktualny ($CUR_PKGVER)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Wykryto nowy commit w salkim-kernel-modules: ${REMOTE_COMMIT:0:7} (obecny: ${CUR_HASH})"
+            TMP_BARE=$(mktemp -d)
+            trap 'rm -rf -- "$TMP_BARE"' EXIT
+
+            git clone --bare --filter=blob:none "$REMOTE_REPO" "$TMP_BARE"
+            NEW_PKGVER=$(printf "r%s.g%s" "$(git -C "$TMP_BARE" rev-list --count HEAD)" "$(git -C "$TMP_BARE" rev-parse --short HEAD)")
+
+            echo "Aktualizacja $PKG_DIR/PKGBUILD do $NEW_PKGVER"
+            sed -i "s/^pkgver=.*/pkgver=$NEW_PKGVER/" "$PKG_DIR/PKGBUILD"
+            sed -i "s/^pkgrel=.*/pkgrel=1/" "$PKG_DIR/PKGBUILD"
+
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "pkgver=$NEW_PKGVER" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- Przeliczenie sum i generowanie .SRCINFO ---
+      - name: Przelicz sumy i wygeneruj .SRCINFO
+        if: steps.compare_nym.outputs.changed == 'true' || steps.check_ntsync.outputs.changed == 'true'
+        env:
+          NYM_CHANGED: ${{ steps.compare_nym.outputs.changed }}
+          NTSYNC_CHANGED: ${{ steps.check_ntsync.outputs.changed }}
         run: |
+          docker run --rm -v "$PWD:/pkg" -w /pkg \
+            -e NYM_CHANGED="$NYM_CHANGED" \
+            -e NTSYNC_CHANGED="$NTSYNC_CHANGED" \
+            archlinux:base-devel bash -c "
+              set -Eeuo pipefail
+              pacman -Sy --noconfirm pacman-contrib git &&
+              useradd -m builder && chown -R builder -R /pkg &&
+              if [ \"\$NYM_CHANGED\" = 'true' ]; then
+                for dir in nym-vpn-app-beta-bin nym-vpnd-beta-bin; do
+                  cd /pkg/\$dir
+                  su builder -c 'SRCDEST=/tmp updpkgsums && makepkg --printsrcinfo > .SRCINFO'
+                done
+              fi
+              if [ \"\$NTSYNC_CHANGED\" = 'true' ]; then
+                cd /pkg/ntsync-iocp-dkms-git
+                su builder -c 'makepkg --printsrcinfo > .SRCINFO'
+              fi
+            "
+          sudo chown -R "$USER:$USER" .
+
+      # --- Commit i push do repozytorium GitHub ---
+      - name: Commit i push do repo GitHub
+        if: steps.compare_nym.outputs.changed == 'true' || steps.check_ntsync.outputs.changed == 'true'
+        run: |
+          set -Eeuo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nym-vpn-app-beta-bin/PKGBUILD nym-vpn-app-beta-bin/.SRCINFO \
-                  nym-vpnd-beta-bin/PKGBUILD nym-vpnd-beta-bin/.SRCINFO
-          git commit -m "chore: update to ${{ steps.latest.outputs.tag }}"
+
+          MSGS=()
+          if [ "${{ steps.compare_nym.outputs.changed }}" = 'true' ]; then
+            git add nym-vpn-app-beta-bin/PKGBUILD nym-vpn-app-beta-bin/.SRCINFO \
+                    nym-vpnd-beta-bin/PKGBUILD nym-vpnd-beta-bin/.SRCINFO
+            MSGS+=("nym-vpn to ${{ steps.latest_nym.outputs.tag }}")
+          fi
+          if [ "${{ steps.check_ntsync.outputs.changed }}" = 'true' ]; then
+            git add ntsync-iocp-dkms-git/PKGBUILD ntsync-iocp-dkms-git/.SRCINFO
+            MSGS+=("ntsync-iocp-dkms-git to ${{ steps.check_ntsync.outputs.pkgver }}")
+          fi
+
+          IFS=", "; COMMIT_MSG="${MSGS[*]}"
+          git commit -m "chore: update $COMMIT_MSG"
           git push
 
+      # --- Publikacja w AUR ---
       - name: Publikuj nym-vpnd-beta-bin w AUR
-        if: steps.compare.outputs.changed == 'true'
+        if: steps.compare_nym.outputs.changed == 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
           pkgname: nym-vpnd-beta-bin
@@ -123,10 +193,10 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "chore: update to ${{ steps.latest.outputs.tag }} (auto)"
+          commit_message: "chore: update to ${{ steps.latest_nym.outputs.tag }} (auto)"
 
       - name: Publikuj nym-vpn-app-beta-bin w AUR
-        if: steps.compare.outputs.changed == 'true'
+        if: steps.compare_nym.outputs.changed == 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
           pkgname: nym-vpn-app-beta-bin
@@ -137,4 +207,15 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "chore: update to ${{ steps.latest.outputs.tag }} (auto)"
+          commit_message: "chore: update to ${{ steps.latest_nym.outputs.tag }} (auto)"
+
+      - name: Publikuj ntsync-iocp-dkms-git w AUR
+        if: steps.check_ntsync.outputs.changed == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: ntsync-iocp-dkms-git
+          pkgbuild: ./ntsync-iocp-dkms-git/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "chore: update to ${{ steps.check_ntsync.outputs.pkgver }} (auto)"
