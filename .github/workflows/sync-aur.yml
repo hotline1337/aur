@@ -21,26 +21,33 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -Eeuo pipefail
+          shopt -s inherit_errexit
 
-          TAGS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          RELEASES_JSON=$(curl -fsSL --connect-timeout 15 --max-time 60 \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/nymtech/nym-vpn-client/releases?per_page=50" \
-            | jq -r '
-              .[]
-              | select(.draft == false)
-              | select(
-                  ([.assets[].name] | any(test("x86_64|amd64"; "i"))) and
-                  ([.assets[].name] | any(test("aarch64|arm64"; "i")))
-                )
-              | .tag_name
-            ')
+            "https://api.github.com/repos/nymtech/nym-vpn-client/releases?per_page=50")
 
-          if [ -z "$TAGS" ]; then
-            echo "Nie znaleziono wydania z buildami x86_64 i aarch64." >&2
+          TAGS=$(jq -r '
+            .[]
+            | select(.draft == false)
+            | select(.tag_name | test("^nym-vpn-v[0-9.]+(-beta\\.[0-9]+)?$"))
+            | (.tag_name | sub("^nym-vpn-v"; "")) as $dlver
+            | [.assets[].name] as $assets
+            | select(
+                ($assets | any(. == "nym-vpn_\($dlver)_linux_x64")) and
+                ($assets | any(test("linux"; "i") and test("x86_64|amd64"; "i") and (test("\\.sig$"; "i") | not))) and
+                ($assets | any(test("linux"; "i") and test("aarch64|arm64"; "i") and (test("\\.sig$"; "i") | not)))
+              )
+            | .tag_name
+          ' <<< "$RELEASES_JSON")
+
+          if [[ -z "$TAGS" ]]; then
+            echo "Nie znaleziono wydania z linuxowymi buildami (app x64 + x86_64/aarch64)." >&2
             exit 1
           fi
 
-          BEST_TAG=$(echo "$TAGS" | sort -rV | head -n 1)
+          BEST_TAG=$(printf '%s\n' "$TAGS" | sort -rV | head -n 1)
 
           if [[ "$BEST_TAG" =~ ^nym-vpn-v([0-9.]+)(-beta\.([0-9]+))?$ ]]; then
             BEST_PKGVER="${BASH_REMATCH[1]}"
@@ -52,45 +59,49 @@ jobs:
           fi
 
           echo "Wybrano wydanie: $BEST_TAG -> pkgver=$BEST_PKGVER pkgrel=$BEST_PKGREL dlver=$BEST_DLVER"
-          echo "tag=$BEST_TAG" >> "$GITHUB_OUTPUT"
-          echo "pkgver=$BEST_PKGVER" >> "$GITHUB_OUTPUT"
-          echo "pkgrel=$BEST_PKGREL" >> "$GITHUB_OUTPUT"
-          echo "dlver=$BEST_DLVER" >> "$GITHUB_OUTPUT"
+          {
+            printf 'tag=%s\n' "$BEST_TAG"
+            printf 'pkgver=%s\n' "$BEST_PKGVER"
+            printf 'pkgrel=%s\n' "$BEST_PKGREL"
+            printf 'dlver=%s\n' "$BEST_DLVER"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Porównaj NymVPN z aktualnym PKGBUILD
         id: compare_nym
+        env:
+          NEW_VER: ${{ steps.latest_nym.outputs.pkgver }}
+          NEW_REL: ${{ steps.latest_nym.outputs.pkgrel }}
         run: |
           set -Eeuo pipefail
-
-          NEW_VER="${{ steps.latest_nym.outputs.pkgver }}"
-          NEW_REL="${{ steps.latest_nym.outputs.pkgrel }}"
 
           CUR_VER=$(grep '^pkgver=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2 | tr -d "'\" ")
           CUR_REL=$(grep '^pkgrel=' nym-vpn-app-beta-bin/PKGBUILD | cut -d= -f2 | tr -d "'\" ")
 
-          if [ "$CUR_VER" = "$NEW_VER" ] && [ "$CUR_REL" = "$NEW_REL" ]; then
+          if [[ "$CUR_VER" == "$NEW_VER" && "$CUR_REL" == "$NEW_REL" ]]; then
             echo "Wersja NymVPN w PKGBUILD ($CUR_VER-$CUR_REL) jest aktualna."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
           else
             echo "Wykryto nową wersję NymVPN: $NEW_VER-$NEW_REL (obecna: $CUR_VER-$CUR_REL)"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Zaktualizuj PKGBUILDy NymVPN
         if: steps.compare_nym.outputs.changed == 'true'
+        env:
+          PKGVER: ${{ steps.latest_nym.outputs.pkgver }}
+          PKGREL: ${{ steps.latest_nym.outputs.pkgrel }}
+          DLVER: ${{ steps.latest_nym.outputs.dlver }}
         run: |
           set -Eeuo pipefail
-
-          PKGVER="${{ steps.latest_nym.outputs.pkgver }}"
-          PKGREL="${{ steps.latest_nym.outputs.pkgrel }}"
-          DLVER="${{ steps.latest_nym.outputs.dlver }}"
 
           DIRS=("nym-vpn-app-beta-bin" "nym-vpnd-beta-bin")
 
           for dir in "${DIRS[@]}"; do
-            sed -i "s/^_dlver=.*/_dlver=$DLVER/" "$dir/PKGBUILD"
-            sed -i "s/^pkgver=.*/pkgver=$PKGVER/" "$dir/PKGBUILD"
-            sed -i "s/^pkgrel=.*/pkgrel=$PKGREL/" "$dir/PKGBUILD"
+            sed -i \
+              -e "s/^_dlver=.*/_dlver=$DLVER/" \
+              -e "s/^pkgver=.*/pkgver=$PKGVER/" \
+              -e "s/^pkgrel=.*/pkgrel=$PKGREL/" \
+              "$dir/PKGBUILD"
           done
 
       # --- ntsync-iocp-dkms-git ---
@@ -103,7 +114,7 @@ jobs:
           PKG_DIR="ntsync-iocp-dkms-git"
 
           REMOTE_COMMIT=$(git ls-remote "$REMOTE_REPO" HEAD | cut -f1)
-          if [ -z "$REMOTE_COMMIT" ]; then
+          if [[ -z "$REMOTE_COMMIT" ]]; then
             echo "Nie udało się pobrać commita HEAD z $REMOTE_REPO" >&2
             exit 1
           fi
@@ -111,9 +122,9 @@ jobs:
           CUR_PKGVER=$(grep '^pkgver=' "$PKG_DIR/PKGBUILD" | cut -d= -f2 | tr -d "'\" ")
           CUR_HASH="${CUR_PKGVER##*.g}"
 
-          if [ -n "$CUR_HASH" ] && [[ "$REMOTE_COMMIT" == "${CUR_HASH}"* ]]; then
+          if [[ -n "$CUR_HASH" && "$REMOTE_COMMIT" == "${CUR_HASH}"* ]]; then
             echo "ntsync-iocp jest aktualny ($CUR_PKGVER)."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
           else
             echo "Wykryto nowy commit w salkim-kernel-modules: ${REMOTE_COMMIT:0:7} (obecny: ${CUR_HASH})"
             TMP_BARE=$(mktemp -d)
@@ -123,60 +134,143 @@ jobs:
             NEW_PKGVER=$(printf "r%s.g%s" "$(git -C "$TMP_BARE" rev-list --count HEAD)" "$(git -C "$TMP_BARE" rev-parse --short HEAD)")
 
             echo "Aktualizacja $PKG_DIR/PKGBUILD do $NEW_PKGVER"
-            sed -i "s/^pkgver=.*/pkgver=$NEW_PKGVER/" "$PKG_DIR/PKGBUILD"
-            sed -i "s/^pkgrel=.*/pkgrel=1/" "$PKG_DIR/PKGBUILD"
+            sed -i \
+              -e "s/^pkgver=.*/pkgver=$NEW_PKGVER/" \
+              -e "s/^pkgrel=.*/pkgrel=1/" \
+              "$PKG_DIR/PKGBUILD"
 
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "pkgver=$NEW_PKGVER" >> "$GITHUB_OUTPUT"
+            {
+              printf 'changed=true\n'
+              printf 'pkgver=%s\n' "$NEW_PKGVER"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- openbot ---
+      - name: Sprawdź najnowszą wersję openbot
+        id: check_openbot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          shopt -s inherit_errexit
+
+          PKG_DIR="openbot"
+
+          RELEASES_JSON=$(curl -fsSL --connect-timeout 15 --max-time 60 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/nightly-labs/openbot/releases?per_page=30")
+
+          TAGS=$(jq -r '
+            .[]
+            | select(.draft == false and .prerelease == false)
+            | select(.tag_name | test("^v[0-9]+(\\.[0-9]+)+$"))
+            | (.tag_name | sub("^v"; "")) as $ver
+            | [.assets[].name] as $assets
+            | select(
+                ($assets | any(. == "OpenBot-\($ver)-x86_64.AppImage")) and
+                ($assets | any(. == "OpenBot-\($ver)-arm64.AppImage"))
+              )
+            | .tag_name
+          ' <<< "$RELEASES_JSON")
+
+          if [[ -z "$TAGS" ]]; then
+            echo "Nie znaleziono wydania openbot z oboma AppImage (x86_64 i arm64)." >&2
+            exit 1
+          fi
+
+          BEST_TAG=$(printf '%s\n' "$TAGS" | sort -rV | head -n 1)
+          NEW_VER="${BEST_TAG#v}"
+          CUR_VER=$(grep '^pkgver=' "$PKG_DIR/PKGBUILD" | cut -d= -f2 | tr -d "'\" ")
+
+          if [[ "$CUR_VER" == "$NEW_VER" ]]; then
+            echo "openbot jest aktualny ($CUR_VER)."
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
+          else
+            echo "Wykryto nową wersję openbot: $NEW_VER (obecna: $CUR_VER)"
+            sed -i \
+              -e "s/^pkgver=.*/pkgver=$NEW_VER/" \
+              -e "s/^pkgrel=.*/pkgrel=1/" \
+              "$PKG_DIR/PKGBUILD"
+
+            {
+              printf 'changed=true\n'
+              printf 'tag=%s\n' "$BEST_TAG"
+              printf 'pkgver=%s\n' "$NEW_VER"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       # --- Przeliczenie sum i generowanie .SRCINFO ---
       - name: Przelicz sumy i wygeneruj .SRCINFO
-        if: steps.compare_nym.outputs.changed == 'true' || steps.check_ntsync.outputs.changed == 'true'
+        if: >-
+          steps.compare_nym.outputs.changed == 'true' ||
+          steps.check_ntsync.outputs.changed == 'true' ||
+          steps.check_openbot.outputs.changed == 'true'
         env:
           NYM_CHANGED: ${{ steps.compare_nym.outputs.changed }}
           NTSYNC_CHANGED: ${{ steps.check_ntsync.outputs.changed }}
+          OPENBOT_CHANGED: ${{ steps.check_openbot.outputs.changed }}
         run: |
           docker run --rm -v "$PWD:/pkg" -w /pkg \
             -e NYM_CHANGED="$NYM_CHANGED" \
             -e NTSYNC_CHANGED="$NTSYNC_CHANGED" \
-            archlinux:base-devel bash -c "
+            -e OPENBOT_CHANGED="$OPENBOT_CHANGED" \
+            archlinux:base-devel bash -c '
               set -Eeuo pipefail
-              pacman -Sy --noconfirm pacman-contrib git &&
-              useradd -m builder && chown -R builder -R /pkg &&
-              if [ \"\$NYM_CHANGED\" = 'true' ]; then
+              pacman -Sy --noconfirm pacman-contrib git
+              useradd -m builder
+              chown -R builder:builder /pkg
+              if [[ "$NYM_CHANGED" == "true" ]]; then
                 for dir in nym-vpn-app-beta-bin nym-vpnd-beta-bin; do
-                  cd /pkg/\$dir
-                  su builder -c 'SRCDEST=/tmp updpkgsums && makepkg --printsrcinfo > .SRCINFO'
+                  cd "/pkg/$dir"
+                  su builder -c "SRCDEST=/tmp updpkgsums && makepkg --printsrcinfo > .SRCINFO"
                 done
               fi
-              if [ \"\$NTSYNC_CHANGED\" = 'true' ]; then
+              if [[ "$NTSYNC_CHANGED" == "true" ]]; then
                 cd /pkg/ntsync-iocp-dkms-git
-                su builder -c 'makepkg --printsrcinfo > .SRCINFO'
+                su builder -c "makepkg --printsrcinfo > .SRCINFO"
               fi
-            "
+              if [[ "$OPENBOT_CHANGED" == "true" ]]; then
+                cd /pkg/openbot
+                su builder -c "SRCDEST=/tmp updpkgsums && makepkg --printsrcinfo > .SRCINFO"
+              fi
+            '
           sudo chown -R "$USER:$USER" .
 
       # --- Commit i push do repozytorium GitHub ---
       - name: Commit i push do repo GitHub
-        if: steps.compare_nym.outputs.changed == 'true' || steps.check_ntsync.outputs.changed == 'true'
+        if: >-
+          steps.compare_nym.outputs.changed == 'true' ||
+          steps.check_ntsync.outputs.changed == 'true' ||
+          steps.check_openbot.outputs.changed == 'true'
+        env:
+          NYM_CHANGED: ${{ steps.compare_nym.outputs.changed }}
+          NYM_TAG: ${{ steps.latest_nym.outputs.tag }}
+          NTSYNC_CHANGED: ${{ steps.check_ntsync.outputs.changed }}
+          NTSYNC_VER: ${{ steps.check_ntsync.outputs.pkgver }}
+          OPENBOT_CHANGED: ${{ steps.check_openbot.outputs.changed }}
+          OPENBOT_TAG: ${{ steps.check_openbot.outputs.tag }}
         run: |
           set -Eeuo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           MSGS=()
-          if [ "${{ steps.compare_nym.outputs.changed }}" = 'true' ]; then
+          if [[ "$NYM_CHANGED" == "true" ]]; then
             git add nym-vpn-app-beta-bin/PKGBUILD nym-vpn-app-beta-bin/.SRCINFO \
                     nym-vpnd-beta-bin/PKGBUILD nym-vpnd-beta-bin/.SRCINFO
-            MSGS+=("nym-vpn to ${{ steps.latest_nym.outputs.tag }}")
+            MSGS+=("nym-vpn to $NYM_TAG")
           fi
-          if [ "${{ steps.check_ntsync.outputs.changed }}" = 'true' ]; then
+          if [[ "$NTSYNC_CHANGED" == "true" ]]; then
             git add ntsync-iocp-dkms-git/PKGBUILD ntsync-iocp-dkms-git/.SRCINFO
-            MSGS+=("ntsync-iocp-dkms-git to ${{ steps.check_ntsync.outputs.pkgver }}")
+            MSGS+=("ntsync-iocp-dkms-git to $NTSYNC_VER")
+          fi
+          if [[ "$OPENBOT_CHANGED" == "true" ]]; then
+            git add openbot/PKGBUILD openbot/.SRCINFO
+            MSGS+=("openbot to $OPENBOT_TAG")
           fi
 
-          IFS=", "; COMMIT_MSG="${MSGS[*]}"
+          COMMIT_MSG=$(IFS=", "; printf '%s' "${MSGS[*]}")
           git commit -m "chore: update $COMMIT_MSG"
           git push
 
@@ -219,3 +313,14 @@ jobs:
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "chore: update to ${{ steps.check_ntsync.outputs.pkgver }} (auto)"
+
+      - name: Publikuj openbot w AUR
+        if: steps.check_openbot.outputs.changed == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: openbot
+          pkgbuild: ./openbot/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "chore: update to ${{ steps.check_openbot.outputs.tag }} (auto)"
