@@ -2,7 +2,7 @@
 
 pkgname=openbot
 pkgver=0.78.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Local-first desktop workspace for persistent AI teammates."
 arch=("x86_64" "aarch64")
 url="https://openbot.run"
@@ -101,7 +101,7 @@ prepare() {
   7z x -y -bd -bso0 -o"app" -- "OpenBot-${pkgver}-${_image_arch}.AppImage"
 
   # FreeDesktop entry conformance: sanitize Exec key
-  desktop-file-edit --set-exec="openbot %U" "app/openbot.desktop"
+  desktop-file-edit --set-key=Exec --set-value="openbot %U" "app/openbot.desktop"
 
   # Asynchronously scale upstream master icon into standard hicolor buckets
   local -i _size
